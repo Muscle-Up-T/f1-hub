@@ -438,7 +438,7 @@ button{-webkit-appearance:none;appearance:none;font-family:'Titillium Web',sans-
         <div class="f1-logo-year">2026</div>
       </div>
       <div style="display:flex;align-items:center;gap:8px;">
-        <div class="round-pill" id="round-pill">RD 2 · CHINA</div>
+        <div class="round-pill" id="round-pill">F1 · 2026</div>
         <div class="live-pill" id="live-pill" style="display:none;"><div class="live-dot"></div><div class="live-text">LIVE</div></div>
       </div>
     </div>
@@ -1237,10 +1237,17 @@ function renderStandings() {
     <button class="toggle-btn ${standingsView==='constructors'?'active':''}" onclick="setStandView('constructors')">Constructors</button>
   </div>`;
 
+  const lr = window._lastRace;
+  const roundNum = lr?.round || 2;
+  const gpName   = lr?.gpName || 'Chinese Grand Prix';
+  const winner   = lr?.winner || 'Antonelli';
+  const leader   = DRIVER_STANDINGS[0];
+  const remaining = Math.max(0, 24 - roundNum);
+
   const banner=`<div class="standings-banner">
-    <div class="sb-label">After Round 2 · Chinese Grand Prix</div>
-    <div class="sb-title">Antonelli wins — Mercedes lead both championships</div>
-    <div class="sb-sub">22 rounds remaining (Bahrain &amp; Saudi cancelled) · Next: Japan R3</div>
+    <div class="sb-label">After Round ${roundNum} · ${gpName}</div>
+    <div class="sb-title">${leader ? `${leader.name} leads — ${leader.pts} pts` : `${winner} wins`}</div>
+    <div class="sb-sub">${remaining} rounds remaining · Last winner: ${winner}</div>
   </div>`;
 
   if(standingsView==='drivers'){
@@ -1657,11 +1664,249 @@ function setWidgetSize(size) {
 }
 
 // ══════════════════════════════════════════════════════════════
+//  LIVE DATA — OpenF1 + Ergast APIs
+//  Runs on every app open. Hardcoded data shows instantly,
+//  then live data silently replaces it when the fetch returns.
+// ══════════════════════════════════════════════════════════════
+
+const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+let _lastFetch = 0;
+let _fetchPromise = null;
+
+// ── Mark which races are past based on today's real date ─────
+function markPastRaces() {
+  const now = new Date();
+  CALENDAR.forEach(r => {
+    if (r.cancelled) return;
+    const raceEnd = new Date(r.dates.end + 'T23:59:00Z');
+    r.past = raceEnd < now;
+  });
+}
+
+// ── Fetch driver standings — Ergast gives real points ────────
+async function fetchDriverStandings() {
+  const res = await fetch(
+    'https://ergast.com/api/f1/current/driverStandings.json',
+    { signal: AbortSignal.timeout(8000) }
+  );
+  if (!res.ok) throw new Error('standings failed');
+  const json = await res.json();
+  const list = json?.MRData?.StandingsTable?.StandingsLists?.[0]?.DriverStandings;
+  if (!list?.length) throw new Error('empty standings');
+
+  const teamMap = {
+    'mercedes':'Mercedes','ferrari':'Ferrari','mclaren':'McLaren',
+    'red_bull':'Red Bull','alpine':'Alpine','williams':'Williams',
+    'haas':'Haas','kick_sauber':'Audi','rb':'Racing Bulls',
+    'aston_martin':'Aston Martin','cadillac':'Cadillac',
+  };
+  const flagMap = {
+    'British':'🇬🇧','Italian':'🇮🇹','Monégasque':'🇲🇨','Spanish':'🇪🇸',
+    'Dutch':'🇳🇱','Finnish':'🇫🇮','Mexican':'🇲🇽','Australian':'🇦🇺',
+    'French':'🇫🇷','German':'🇩🇪','Thai':'🇹🇭','Canadian':'🇨🇦',
+    'Brazilian':'🇧🇷','Argentine':'🇦🇷','New Zealander':'🇳🇿','Swedish':'🇸🇪',
+    'American':'🇺🇸',
+  };
+
+  return list.map(s => ({
+    pos:   parseInt(s.position),
+    name:  `${s.Driver.givenName} ${s.Driver.familyName}`,
+    short: s.Driver.code || s.Driver.familyName.slice(0,3).toUpperCase(),
+    team:  teamMap[s.Constructors?.[0]?.constructorId] || s.Constructors?.[0]?.name || 'Unknown',
+    flag:  flagMap[s.Driver.nationality] || '🏁',
+    pts:   parseFloat(s.points),
+    wins:  parseInt(s.wins),
+  }));
+}
+
+// ── Fetch constructor standings ───────────────────────────────
+async function fetchConstructorStandings() {
+  const res = await fetch(
+    'https://ergast.com/api/f1/current/constructorStandings.json',
+    { signal: AbortSignal.timeout(8000) }
+  );
+  if (!res.ok) throw new Error('constructor standings failed');
+  const json = await res.json();
+  const list = json?.MRData?.StandingsTable?.StandingsLists?.[0]?.ConstructorStandings;
+  if (!list?.length) throw new Error('empty constructor standings');
+
+  const nameMap = {
+    'mercedes':'Mercedes','ferrari':'Ferrari','mclaren':'McLaren',
+    'red_bull':'Red Bull','alpine':'Alpine','williams':'Williams',
+    'haas':'Haas','kick_sauber':'Audi','rb':'Racing Bulls',
+    'aston_martin':'Aston Martin','cadillac':'Cadillac',
+  };
+
+  return list.map(s => ({
+    pos:     parseInt(s.position),
+    name:    nameMap[s.Constructor.constructorId] || s.Constructor.name,
+    pts:     parseFloat(s.points),
+    wins:    parseInt(s.wins),
+    drivers: '',
+  }));
+}
+
+// ── Fetch last race result ────────────────────────────────────
+async function fetchLastResult() {
+  const res = await fetch(
+    'https://ergast.com/api/f1/current/last/results.json',
+    { signal: AbortSignal.timeout(8000) }
+  );
+  if (!res.ok) throw new Error('last result failed');
+  const json = await res.json();
+  const race = json?.MRData?.RaceTable?.Races?.[0];
+  if (!race) throw new Error('no race');
+
+  return {
+    gpName:     race.raceName,
+    round:      parseInt(race.round),
+    winner:     race.Results?.[0]?.Driver?.familyName || '',
+    winnerTeam: race.Results?.[0]?.Constructor?.name  || '',
+    podium: (race.Results || []).slice(0,3).map(r => ({
+      pos:    parseInt(r.position),
+      driver: r.Driver.familyName,
+      team:   r.Constructor.name,
+    })),
+  };
+}
+
+// ── Fetch all race results and update calendar ────────────────
+async function updateCalendarResults() {
+  const res = await fetch(
+    'https://ergast.com/api/f1/current/results.json?limit=100',
+    { signal: AbortSignal.timeout(8000) }
+  );
+  if (!res.ok) return;
+  const json = await res.json();
+  const races = json?.MRData?.RaceTable?.Races || [];
+
+  for (const er of races) {
+    const cal = CALENDAR.find(r => r.round === parseInt(er.round));
+    if (!cal) continue;
+    cal.past       = true;
+    cal.winner     = er.Results?.[0]?.Driver?.familyName     || cal.winner || '';
+    cal.winnerTeam = er.Results?.[0]?.Constructor?.name      || cal.winnerTeam || '';
+    cal.podium = (er.Results || []).slice(0,3).map(r => ({
+      pos:    parseInt(r.position),
+      driver: r.Driver.familyName,
+      team:   r.Constructor.name,
+    }));
+  }
+}
+
+// ── Check if a session is live right now ─────────────────────
+async function checkLiveSession() {
+  const res = await fetch(
+    'https://api.openf1.org/v1/sessions?year=2026',
+    { signal: AbortSignal.timeout(5000) }
+  );
+  if (!res.ok) return null;
+  const sessions = await res.json();
+  const now = Date.now();
+  for (const s of sessions) {
+    const start = new Date(s.date_start).getTime();
+    const end   = new Date(s.date_end || s.date_start).getTime() + 3 * 3600000;
+    if (now >= start && now <= end) return s;
+  }
+  return null;
+}
+
+// ── Main fetch orchestrator ───────────────────────────────────
+async function fetchLiveData() {
+  if (_fetchPromise) return _fetchPromise;
+  if (Date.now() - _lastFetch < CACHE_TTL_MS) return;
+
+  _fetchPromise = (async () => {
+    // Show tiny spinner in header
+    const pill = document.getElementById('round-pill');
+    if (pill) { pill._orig = pill.textContent; pill.textContent = 'updating…'; }
+
+    try {
+      // Always mark past races from real date first
+      markPastRaces();
+
+      // Fire all fetches in parallel
+      const [drivers, constructors, lastResult, liveSession] = await Promise.allSettled([
+        fetchDriverStandings(),
+        fetchConstructorStandings(),
+        fetchLastResult(),
+        checkLiveSession(),
+      ]);
+
+      // Apply driver standings
+      if (drivers.status === 'fulfilled' && drivers.value?.length) {
+        DRIVER_STANDINGS.length = 0;
+        drivers.value.forEach(d => DRIVER_STANDINGS.push(d));
+      }
+
+      // Apply constructor standings + fill driver names
+      if (constructors.status === 'fulfilled' && constructors.value?.length) {
+        const drvData = drivers.status === 'fulfilled' ? drivers.value : [];
+        constructors.value.forEach(c => {
+          const drvs = drvData.filter(d => d.team === c.name).map(d => d.short);
+          c.drivers = drvs.join(' / ') || c.drivers;
+        });
+        CONSTRUCTOR_STANDINGS.length = 0;
+        constructors.value.forEach(c => CONSTRUCTOR_STANDINGS.push(c));
+      }
+
+      // Update calendar with real results
+      await updateCalendarResults().catch(() => {});
+
+      // Store last result info for standings banner
+      if (lastResult.status === 'fulfilled') {
+        window._lastRace = lastResult.value;
+      }
+
+      // Handle live session
+      const live = liveSession.status === 'fulfilled' ? liveSession.value : null;
+      const livePill  = document.getElementById('live-pill');
+      if (live && livePill) {
+        livePill.style.display = 'flex';
+        if (pill) pill.style.display = 'none';
+        _lastFetch = 0; // re-fetch next time immediately (session is live)
+      } else {
+        _lastFetch = Date.now();
+      }
+
+      // Re-render with fresh data
+      render();
+      buildWidget();
+
+    } catch(e) {
+      console.log('Fetch error (using cached data):', e.message);
+    } finally {
+      // Restore header pill
+      if (pill && pill._orig) pill.textContent = pill._orig;
+      _fetchPromise = null;
+    }
+  })();
+
+  return _fetchPromise;
+}
+
+// ══════════════════════════════════════════════════════════════
 //  INIT
 // ══════════════════════════════════════════════════════════════
+
+// 1. Mark past races immediately from today's real date
+markPastRaces();
+
+// 2. Render instantly with hardcoded data as fallback
 buildWidget();
 startCountdown();
 render();
+
+// 3. Fetch live data in background — re-renders when ready
+fetchLiveData();
+
+// 4. Re-fetch every time you open the app from background
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    _lastFetch = 0;
+    fetchLiveData();
+  }
+});
 
 // ── SERVICE WORKER (PWA) ─────────────────────────────────────
 if ('serviceWorker' in navigator) {
