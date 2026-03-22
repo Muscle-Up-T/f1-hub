@@ -876,81 +876,68 @@ const CALENDAR = [
   },
 ];
 
-// Real news from search results (paraphrased)
-const NEWS = [
-  {
-    id:1,
-    tag:'BREAKING',breaking:true,
-    icon:'🇨🇳',
-    title:'Antonelli wins Chinese GP — becomes second-youngest F1 race winner ever',
-    body:'The 19-year-old Italian spearheaded a Mercedes 1-2 at Shanghai, with Russell runner-up. Hamilton claimed first Ferrari podium at 26th attempt.',
-    source:'RacingNews365',time:'Today, 09:38',
-    url:'https://racingnews365.com/2026-f1-chinese-grand-prix-results',
-  },
-  {
-    id:2,
-    tag:'SCHEDULE',breaking:false,
-    icon:'🚫',
-    title:'Bahrain & Saudi Arabian GPs officially cancelled due to Middle East conflict',
-    body:'F1 and the FIA confirmed the cancellation of both April rounds amid ongoing regional instability. Season now comprises 22 races.',
-    source:'Formula1.com',time:'Today',
-    url:'https://www.formula1.com/en/racing/2026',
-  },
-  {
-    id:3,
-    tag:'RACE',breaking:false,
-    icon:'🏆',
-    title:'Mercedes dominant — back-to-back 1-2 finishes to open 2026 season',
-    body:'Russell leads the championship by four points over Antonelli after two rounds. Ferrari remains their closest challenger.',
-    source:'GPFans',time:'Today, 09:39',
-    url:'https://www.gpfans.com',
-  },
-  {
-    id:4,
-    tag:'TECHNICAL',breaking:false,
-    icon:'⚡',
-    title:'F1 may revise 2026 power unit rules as early as Miami GP',
-    body:"Teams and F1 bosses will meet to discuss changes to energy harvesting rules after drivers criticised the new 'counter-intuitive' driving style.",
-    source:'The Race',time:'10 Mar',
-    url:'https://www.the-race.com/formula-1/f1-could-change-its-2026-rules-as-early-as-round-three/',
-  },
-  {
-    id:5,
-    tag:'DRIVER',breaking:false,
-    icon:'🐂',
-    title:'Verstappen drops hint over Red Bull future amid Mercedes links',
-    body:'Despite Red Bull struggling with 2026 regs and Mercedes dominating, Verstappen said he intends to see out his career with Red Bull.',
-    source:'GPFans',time:'10 Mar',
-    url:'https://www.gpfans.com',
-  },
-  {
-    id:6,
-    tag:'DISASTER',breaking:false,
-    icon:'🚗',
-    title:"McLaren double DNF at China — 'disaster' wrecks title defence",
-    body:'Neither Norris nor Piastri started the Chinese GP due to electrical issues. McLaren issued an apology and launched an investigation.',
-    source:'GPFans',time:'Today',
-    url:'https://www.gpfans.com',
-  },
-  {
-    id:7,
-    tag:'TEAMS',breaking:false,
-    icon:'🏎',
-    title:"Fans divided over 2026 cars — 'Formula E on steroids' debate rages",
-    body:"The most radical regs overhaul in a decade has split opinion. Verstappen called them 'terrible', Norris labelled racing 'artificial'.",
-    source:'RacingNews365',time:'11 Mar',
-    url:'https://racingnews365.com/f1-fans-split-over-2026-rules-with-eye-opening-verdict',
-  },
-  {
-    id:8,
-    tag:'DRIVER',breaking:false,
-    icon:'🇬🇧',
-    title:"Hamilton: 'Proud' after first Ferrari podium — but Mercedes gap is real",
-    body:'Lewis Hamilton finished third in China after a feisty battle with Leclerc. "They clearly have a party mode," he suggested, pointing to Mercedes power.',
-    source:'GPToday',time:'Today',
-    url:'https://www.gptoday.com',
-  },
-];
+// ══════════════════════════════════════════════════════════════
+//  NEWS — Live RSS feeds
+//  Fetched fresh on every app open via rss2json.com (free, CORS-safe)
+//  Falls back to empty state with a reload button if offline
+// ══════════════════════════════════════════════════════════════
+
+// Live articles stored here after fetch
+let LIVE_NEWS    = [];
+let NEWS_LOADING = true;
+let NEWS_ERROR   = false;
+
+// Format publish date as relative time e.g. "2h ago", "Yesterday", "22 Mar"
+function relativeTime(dateStr) {
+  if (!dateStr) return '';
+  const d    = new Date(dateStr);
+  const diff = Date.now() - d;
+  if (isNaN(diff)) return '';
+  const mins  = Math.floor(diff / 60000);
+  const hours = Math.floor(diff / 3600000);
+  const days  = Math.floor(diff / 86400000);
+  if (mins  < 2)  return 'Just now';
+  if (mins  < 60) return `${mins}m ago`;
+  if (hours < 24) return `${hours}h ago`;
+  if (days === 1) return 'Yesterday';
+  if (days  < 7)  return `${days}d ago`;
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${d.getDate()} ${months[d.getMonth()]}`;
+}
+
+// Fetch all feeds via our own Vercel proxy (no CORS issues)
+async function fetchAllNews() {
+  NEWS_LOADING = true;
+  NEWS_ERROR   = false;
+  if (tab === 'news') render();
+
+  try {
+    const res  = await fetch('/api/news', { signal: AbortSignal.timeout(12000) });
+    if (!res.ok) throw new Error(`News API ${res.status}`);
+    const json = await res.json();
+
+    if (!json.articles?.length) throw new Error('No articles returned');
+
+    LIVE_NEWS = json.articles.map(a => ({
+      ...a,
+      time:     relativeTime(a.pubDate),
+      breaking: (Date.now() - a.ts) < 3 * 3600000 && json.articles.indexOf(a) === 0,
+    }));
+
+    NEWS_LOADING = false;
+    NEWS_ERROR   = false;
+    window._newsFetchedAt = Date.now();
+    if (tab === 'news') render();
+
+  } catch(e) {
+    console.log('News fetch failed:', e.message);
+    NEWS_ERROR   = true;
+    NEWS_LOADING = false;
+    if (tab === 'news') render();
+  }
+}
+
+
 
 // ══════════════════════════════════════════════════════════════
 //  STATE
@@ -1092,39 +1079,109 @@ function render() {
 //  NEWS
 // ══════════════════════════════════════════════════════════════
 function renderNews() {
-  const hero = NEWS[0];
+  // ── Loading state ────────────────────────────────────────
+  if (NEWS_LOADING) {
+    const skeletons = Array(5).fill(0).map((_,i) => `
+      <div class="news-card" style="animation-delay:${i*0.06}s;pointer-events:none;">
+        <div class="nc-icon" style="background:rgba(255,255,255,.04);border:1px solid var(--border);"></div>
+        <div style="flex:1;min-width:0;">
+          <div style="height:8px;width:40px;background:#222;border-radius:4px;margin-bottom:8px;"></div>
+          <div style="height:13px;width:90%;background:#1e1e1e;border-radius:4px;margin-bottom:5px;"></div>
+          <div style="height:13px;width:70%;background:#1a1a1a;border-radius:4px;margin-bottom:8px;"></div>
+          <div style="height:10px;width:50%;background:#161616;border-radius:4px;"></div>
+        </div>
+      </div>`).join('');
+    return `<div style="padding:16px 0 0;">
+      <div style="padding:0 16px 10px;display:flex;align-items:center;justify-content:space-between;">
+        <div class="section-lbl" style="margin:0">Latest Headlines</div>
+        <div style="font-size:9px;color:var(--muted);-webkit-text-fill-color:var(--muted);font-weight:700;letter-spacing:1px;animation:pulse 1.5s ease infinite;">LOADING…</div>
+      </div>
+      ${skeletons}
+    </div>`;
+  }
+
+  // ── Error / offline state ────────────────────────────────
+  if (NEWS_ERROR || !LIVE_NEWS.length) {
+    return `<div style="text-align:center;padding:60px 24px;">
+      <div style="font-size:40px;margin-bottom:12px;">📡</div>
+      <div style="font-family:'Titillium Web',sans-serif;font-weight:700;font-size:18px;color:#fff;-webkit-text-fill-color:#fff;margin-bottom:6px;">Can't load news</div>
+      <div style="font-size:12px;color:var(--muted);-webkit-text-fill-color:var(--muted);margin-bottom:24px;line-height:1.6;">Check your connection.<br>Standings and calendar still work offline.</div>
+      <button onclick="NEWS_LOADING=true;fetchAllNews();" style="background:var(--f1-red);color:#fff;-webkit-text-fill-color:#fff;border:none;border-radius:8px;padding:12px 24px;font-family:'Titillium Web',sans-serif;font-weight:700;font-size:13px;letter-spacing:1px;cursor:pointer;">
+        Try Again
+      </button>
+    </div>`;
+  }
+
+  // ── Live articles ────────────────────────────────────────
+  const hero = LIVE_NEWS[0];
+  const rest = LIVE_NEWS.slice(1);
+
+  // Hero card — first / newest article
   const heroHTML = `
     <div class="news-hero" onclick="window.open('${hero.url}','_blank')">
       <div class="news-hero-image">${hero.icon}</div>
       <div class="news-hero-overlay">
-        ${hero.breaking?`<div class="breaking-badge"><div class="breaking-dot"></div>BREAKING</div>`:
-          `<div style="font-size:8px;font-weight:700;letter-spacing:2px;color:var(--f1-red);-webkit-text-fill-color:var(--f1-red);margin-bottom:4px">${hero.tag}</div>`}
+        ${hero.breaking
+          ? `<div class="breaking-badge"><div class="breaking-dot"></div>BREAKING</div>`
+          : `<div style="font-size:8px;font-weight:700;letter-spacing:2px;color:var(--f1-red);-webkit-text-fill-color:var(--f1-red);margin-bottom:4px;">${hero.tag}</div>`
+        }
         <div class="nho-title">${hero.title}</div>
-        <div style="font-size:10px;color:var(--muted);-webkit-text-fill-color:var(--muted);margin-top:4px;">${hero.source} · ${hero.time}</div>
+        <div style="font-size:10px;color:var(--muted);-webkit-text-fill-color:var(--muted);margin-top:5px;">
+          ${hero.source} · ${hero.time}
+        </div>
       </div>
     </div>`;
 
-  const cardsHTML = NEWS.slice(1).map((n,i)=>`
+  // Source filter chips
+  const sources = ['All', ...new Set(LIVE_NEWS.map(n => n.source))];
+  const activeSource = window._newsSource || 'All';
+  const filterHTML = `
+    <div style="display:flex;gap:6px;overflow-x:auto;padding:0 16px 14px;margin-top:4px;">
+      ${sources.map(s => `
+        <button class="filter-chip ${activeSource===s?'active':''}"
+          onclick="window._newsSource='${s}';render();">${s}</button>
+      `).join('')}
+    </div>`;
+
+  // Filter articles by source
+  const filtered = activeSource === 'All'
+    ? rest
+    : rest.filter(n => n.source === activeSource);
+
+  const cardsHTML = filtered.map((n,i) => `
     <div class="news-card" style="animation-delay:${i*0.04}s" onclick="window.open('${n.url}','_blank')">
-      <div class="nc-icon" style="background:rgba(255,255,255,.04);border:1px solid var(--border);">${n.icon}</div>
+      <div class="nc-icon" style="background:rgba(255,255,255,.04);border:1px solid var(--border);font-size:22px;display:flex;align-items:center;justify-content:center;">${n.icon}</div>
       <div style="flex:1;min-width:0;">
-        ${n.breaking?`<div class="breaking-badge" style="margin-bottom:5px;font-size:7px;"><div class="breaking-dot"></div>BREAKING</div>`:
-          `<div class="nc-tag">${n.tag}</div>`}
+        ${n.breaking
+          ? `<div class="breaking-badge" style="font-size:7px;margin-bottom:5px;"><div class="breaking-dot"></div>BREAKING</div>`
+          : `<div class="nc-tag">${n.tag}</div>`
+        }
         <div class="nc-title">${n.title}</div>
+        ${n.summary ? `<div style="font-size:11px;color:var(--muted);-webkit-text-fill-color:var(--muted);margin-top:4px;line-height:1.5;">${n.summary.slice(0,100)}…</div>` : ''}
         <div class="nc-meta">${n.source} · ${n.time}</div>
       </div>
     </div>`).join('');
 
+  // Last updated timestamp
+  const lastUpdated = LIVE_NEWS[0]?.time || '';
+
   return `
     <div style="padding:4px 0 0;">
       <div style="padding:0 16px 10px;display:flex;align-items:center;justify-content:space-between;">
-        <div class="section-lbl" style="margin:0">Latest Headlines</div>
-        <div style="font-size:9px;color:var(--muted);-webkit-text-fill-color:var(--muted);font-weight:700;letter-spacing:1px;">15 MAR 2026</div>
+        <div class="section-lbl" style="margin:0;">Latest Headlines</div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <div style="font-size:9px;color:var(--muted);-webkit-text-fill-color:var(--muted);font-weight:700;letter-spacing:1px;">${lastUpdated ? 'LIVE' : ''}</div>
+          <button onclick="NEWS_LOADING=true;LIVE_NEWS=[];fetchAllNews();"
+            style="background:none;border:1px solid var(--border2);border-radius:4px;padding:3px 8px;font-size:9px;font-weight:700;letter-spacing:1px;color:var(--muted);-webkit-text-fill-color:var(--muted);cursor:pointer;">
+            ↻ REFRESH
+          </button>
+        </div>
       </div>
       ${heroHTML}
+      ${filterHTML}
       ${cardsHTML}
       <div style="text-align:center;padding:16px;font-size:11px;color:var(--muted);-webkit-text-fill-color:var(--muted);">
-        Sources: GPFans · RacingNews365 · The Race · Formula1.com
+        Sources: Autosport · Motorsport.com · Sky Sports F1
       </div>
     </div>`;
 }
@@ -1238,10 +1295,10 @@ function renderStandings() {
   </div>`;
 
   const lr = window._lastRace;
-  const roundNum = lr?.round || 2;
-  const gpName   = lr?.gpName || 'Chinese Grand Prix';
-  const winner   = lr?.winner || 'Antonelli';
-  const leader   = DRIVER_STANDINGS[0];
+  const roundNum  = lr?.round   || 2;
+  const gpName    = lr?.gpName  || 'Chinese Grand Prix';
+  const winner    = lr?.winner  || 'Antonelli';
+  const leader    = DRIVER_STANDINGS[0];
   const remaining = Math.max(0, 24 - roundNum);
 
   const banner=`<div class="standings-banner">
@@ -1250,8 +1307,93 @@ function renderStandings() {
     <div class="sb-sub">${remaining} rounds remaining · Last winner: ${winner}</div>
   </div>`;
 
+  // ── Live race panel ──────────────────────────────────────
+  let livePanel = '';
+  if (LIVE_RACE?.isLive && LIVE_RACE.standings?.length) {
+    const favShorts = PREFS.favDrivers || [];
+    const all       = LIVE_RACE.standings;
+
+    // Split pinned vs rest
+    const pinned = favShorts
+      .map(sh => all.find(d => d.short === sh))
+      .filter(Boolean);
+    const top10  = all.slice(0, 10);
+
+    // Merge: pinned first (highlighted), then top 10, deduplicated
+    const pinnedNums = new Set(pinned.map(d => d.driverNumber));
+    const merged = [
+      ...pinned,
+      ...top10.filter(d => !pinnedNums.has(d.driverNumber)),
+    ];
+
+    const rows = merged.map(d => {
+      const color   = TEAM_COLORS[d.team] || '#555';
+      const isFav   = pinnedNums.has(d.driverNumber);
+      const posCol  = d.position === 1 ? '#ffd700'
+                    : d.position === 2 ? '#aaa'
+                    : d.position === 3 ? '#cd7f32' : '#444';
+      return `<div style="
+        display:flex;align-items:center;gap:9px;
+        padding:7px 14px;
+        border-bottom:1px solid rgba(255,255,255,.03);
+        background:${isFav ? 'rgba(225,6,0,.05)' : 'transparent'};
+      ">
+        <div style="font-family:'Titillium Web',sans-serif;font-weight:900;font-size:16px;
+          color:${posCol};-webkit-text-fill-color:${posCol};min-width:22px;text-align:center;">
+          ${d.position}
+        </div>
+        <div style="width:3px;height:28px;background:${color};border-radius:2px;flex-shrink:0;"></div>
+        <div style="flex:1;min-width:0;">
+          <div style="font-family:'Titillium Web',sans-serif;font-weight:700;font-size:14px;
+            color:${isFav?'#fff':'#ccc'};-webkit-text-fill-color:${isFav?'#fff':'#ccc'};">
+            ${isFav ? '★ ' : ''}${d.name}
+          </div>
+          <div style="font-size:10px;color:var(--muted);-webkit-text-fill-color:var(--muted);">${d.team}</div>
+        </div>
+        <div style="text-align:right;flex-shrink:0;">
+          <div style="font-size:12px;font-weight:700;
+            color:${d.gap==='LEADER'?'var(--f1-red)':'#888'};
+            -webkit-text-fill-color:${d.gap==='LEADER'?'var(--f1-red)':'#888'};">
+            ${d.gap || '—'}
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+
+    const updatedAgo = LIVE_RACE.fetchedAt
+      ? Math.round((Date.now() - LIVE_RACE.fetchedAt) / 1000) + 's ago'
+      : '';
+
+    livePanel = `
+      <div style="margin:0 0 16px;background:linear-gradient(135deg,#1a0005,#111);
+        border:1px solid rgba(225,6,0,.35);border-radius:10px;overflow:hidden;">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px 10px;">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <div class="live-badge" style="display:flex;align-items:center;gap:5px;background:rgba(225,6,0,.15);
+              border:1px solid rgba(225,6,0,.4);border-radius:4px;padding:4px 10px;">
+              <div style="width:5px;height:5px;border-radius:50%;background:var(--f1-red);animation:pulse 1s infinite;"></div>
+              <div style="font-size:10px;font-weight:700;letter-spacing:2px;color:var(--f1-red);-webkit-text-fill-color:var(--f1-red);">LIVE</div>
+            </div>
+            <div style="font-family:'Titillium Web',sans-serif;font-weight:700;font-size:14px;color:#fff;-webkit-text-fill-color:#fff;">
+              ${LIVE_RACE.sessionName} · ${LIVE_RACE.location}
+            </div>
+          </div>
+          <div style="text-align:right;">
+            ${LIVE_RACE.lapNumber ? `<div style="font-size:10px;font-weight:700;color:#555;-webkit-text-fill-color:#555;">LAP ${LIVE_RACE.lapNumber}</div>` : ''}
+            <div style="font-size:9px;color:#333;-webkit-text-fill-color:#333;">${updatedAgo}</div>
+          </div>
+        </div>
+        ${favShorts.length === 0 ? `
+          <div style="padding:8px 14px 12px;font-size:11px;color:var(--muted);-webkit-text-fill-color:var(--muted);">
+            ★ Pin up to 3 drivers in the <b style="color:#fff;-webkit-text-fill-color:#fff;">Widgets</b> tab to highlight them here
+          </div>` : ''}
+        <div style="border-top:1px solid rgba(255,255,255,.06);">${rows}</div>
+      </div>`;
+  }
+
+
   if(standingsView==='drivers'){
-    const max=DRIVER_STANDINGS[0].pts;
+    const max=DRIVER_STANDINGS[0]?.pts||1;
     const rows=DRIVER_STANDINGS.map((d,i)=>{
       const color=TEAM_COLORS[d.team]||'#555';
       const barW=max>0?Math.round((d.pts/max)*100):0;
@@ -1271,9 +1413,9 @@ function renderStandings() {
         </div>
       </div>`;
     }).join('');
-    return toggle+banner+rows;
+    return toggle+livePanel+banner+rows;
   } else {
-    const max=CONSTRUCTOR_STANDINGS[0].pts;
+    const max=CONSTRUCTOR_STANDINGS[0]?.pts||1;
     const rows=CONSTRUCTOR_STANDINGS.map((t,i)=>{
       const color=TEAM_COLORS[t.name]||'#555';
       const barW=max>0?Math.round((t.pts/max)*100):0;
@@ -1293,7 +1435,7 @@ function renderStandings() {
         </div>
       </div>`;
     }).join('');
-    return toggle+banner+rows;
+    return toggle+livePanel+banner+rows;
   }
 }
 function setStandView(v){standingsView=v;render();}
@@ -1794,21 +1936,54 @@ async function updateCalendarResults() {
   }
 }
 
+// ── Live race state ──────────────────────────────────────────
+let LIVE_RACE      = null;
+let _liveRaceTimer = null;
+
+async function fetchLiveRace() {
+  try {
+    const res = await fetch('/api/live', { signal: AbortSignal.timeout(10000) });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.isLive ? data : null;
+  } catch { return null; }
+}
+
+function startLivePolling() {
+  if (_liveRaceTimer) return;
+  _liveRaceTimer = setInterval(async () => {
+    const data = await fetchLiveRace();
+    LIVE_RACE   = data;
+    const livePill  = document.getElementById('live-pill');
+    const roundPill = document.getElementById('round-pill');
+    if (LIVE_RACE) {
+      if (livePill)  livePill.style.display  = 'flex';
+      if (roundPill) roundPill.style.display  = 'none';
+    } else {
+      if (livePill)  livePill.style.display  = 'none';
+      if (roundPill) roundPill.style.display  = '';
+      stopLivePolling();
+    }
+    if (tab === 'standings') render();
+  }, 30000);
+}
+
+function stopLivePolling() {
+  if (_liveRaceTimer) { clearInterval(_liveRaceTimer); _liveRaceTimer = null; }
+}
+
 // ── Check if a session is live right now ─────────────────────
 async function checkLiveSession() {
-  const res = await fetch(
-    'https://api.openf1.org/v1/sessions?year=2026',
-    { signal: AbortSignal.timeout(5000) }
-  );
-  if (!res.ok) return null;
-  const sessions = await res.json();
-  const now = Date.now();
-  for (const s of sessions) {
-    const start = new Date(s.date_start).getTime();
-    const end   = new Date(s.date_end || s.date_start).getTime() + 3 * 3600000;
-    if (now >= start && now <= end) return s;
+  const data = await fetchLiveRace();
+  LIVE_RACE  = data;
+  if (data) {
+    startLivePolling();
+    const livePill  = document.getElementById('live-pill');
+    const roundPill = document.getElementById('round-pill');
+    if (livePill)  livePill.style.display  = 'flex';
+    if (roundPill) roundPill.style.display  = 'none';
   }
-  return null;
+  return data;
 }
 
 // ── Main fetch orchestrator ───────────────────────────────────
@@ -1900,11 +2075,18 @@ render();
 // 3. Fetch live data in background — re-renders when ready
 fetchLiveData();
 
-// 4. Re-fetch every time you open the app from background
+// 4. Fetch news in parallel
+fetchAllNews();
+
+// 5. Re-fetch every time you open the app from background
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
     _lastFetch = 0;
     fetchLiveData();
+    // Re-fetch news if last fetch was more than 5 minutes ago
+    if (!NEWS_LOADING && (Date.now() - (window._newsFetchedAt||0)) > 5 * 60 * 1000) {
+      fetchAllNews();
+    }
   }
 });
 
